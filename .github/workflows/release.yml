@@ -1,0 +1,109 @@
+name: Release
+
+# Tag a release to publish it:
+#   git tag v1.0.0 && git push origin v1.0.0
+#
+# Required repository secrets:
+#   MACOS_CERTIFICATE       base64 of your Developer ID Application .p12
+#   MACOS_CERTIFICATE_PWD   password for that .p12
+#   MACOS_SIGN_IDENTITY     e.g. "Developer ID Application: Your Name (TEAMID)"
+#   AC_API_KEY_ID           App Store Connect API key id
+#   AC_API_ISSUER_ID        App Store Connect issuer id
+#   AC_API_KEY              base64 of the AuthKey_XXXX.p8
+#
+# Create the .p12 base64 with:  base64 -i cert.p12 | pbcopy
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: swift test
+
+      - name: Import signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          KEYCHAIN=$RUNNER_TEMP/build.keychain
+          KEYCHAIN_PWD=$(uuidgen)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/cert.p12
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security import $RUNNER_TEMP/cert.p12 -k "$KEYCHAIN" \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain
+          rm $RUNNER_TEMP/cert.p12
+
+      - name: Build signed disk image
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          make VERSION="${{ steps.version.outputs.value }}" \
+               SIGN_IDENTITY="$MACOS_SIGN_IDENTITY" dmg
+          codesign --sign "$MACOS_SIGN_IDENTITY" --timestamp \
+            "build/Clack-${{ steps.version.outputs.value }}.dmg"
+
+      - name: Notarize and staple
+        env:
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_KEY: ${{ secrets.AC_API_KEY }}
+        run: |
+          echo "$AC_API_KEY" | base64 --decode > $RUNNER_TEMP/AuthKey.p8
+          DMG="build/Clack-${{ steps.version.outputs.value }}.dmg"
+          xcrun notarytool submit "$DMG" \
+            --key $RUNNER_TEMP/AuthKey.p8 \
+            --key-id "$AC_API_KEY_ID" \
+            --issuer "$AC_API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          rm $RUNNER_TEMP/AuthKey.p8
+
+      - name: Checksum
+        id: sum
+        run: |
+          DMG="build/Clack-${{ steps.version.outputs.value }}.dmg"
+          echo "sha=$(shasum -a 256 "$DMG" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # A stable filename so the landing page can always link to
+      # /releases/latest/download/Clack.dmg without being edited.
+      - name: Stable alias
+        run: cp "build/Clack-${{ steps.version.outputs.value }}.dmg" build/Clack.dmg
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/Clack-${{ steps.version.outputs.value }}.dmg
+            build/Clack.dmg
+          generate_release_notes: true
+          body: |
+            ### Install
+
+            ```
+            brew install --cask ay-chang/tap/clack
+            ```
+
+            Or download `Clack-${{ steps.version.outputs.value }}.dmg` below.
+            Signed with a Developer ID and notarized by Apple.
+
+            `sha256  ${{ steps.sum.outputs.sha }}`

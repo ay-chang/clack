@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build app bundle
+        run: make
+
+      - name: Verify the bundle
+        run: |
+          lipo -info build/Clack.app/Contents/MacOS/Clack
+          codesign --verify --deep --strict --verbose=2 build/Clack.app
+          plutil -lint build/Clack.app/Contents/Info.plist
+
+      - name: Assert no network APIs are linked
+        run: |
+          if grep -rniE "URLSession|NSURLConnection|CFSocket|CFStream" Sources/; then
+            echo "::error::Networking API referenced — Clack must make no network calls."
+            exit 1
+          fi
+          echo "No networking APIs referenced."
