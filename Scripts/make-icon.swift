@@ -129,8 +129,11 @@ icon.draw(mark, in: drawn)
 guard let iconImage = icon.makeImage() else { exit(1) }
 write(iconImage, to: "\(outDir)/icon_1024.png")
 
-// --- 3. Menu bar template: black with alpha, @2x for a 16pt-tall slot. ---
-let barH: CGFloat = 32                       // 16pt @2x
+// --- 3. Menu bar template: black with alpha, rendered at 4x. ---
+// The mark is wide and solid, so matching the *height* of a typical SF Symbol
+// makes it read much heavier than its neighbours. The display size is set in
+// ClackApp.swift; this just needs enough resolution to downsample cleanly.
+let barH: CGFloat = 44
 let barW = (markW / markH) * barH
 guard let bar = CGContext(
     data: nil, width: Int(barW.rounded()), height: Int(barH), bitsPerComponent: 8,
